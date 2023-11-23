@@ -3,6 +3,7 @@
 #include "TM1637Display.h"
 #include "DFRobotDFPlayerMini.h"
 #include "Adafruit_NeoPixel.h"
+#include <EEPROM.h>
 
 //========================USEFUL VARIABLES=============================
 int UTC = 2; //Set your time zone ex: france = UTC+2
@@ -19,6 +20,7 @@ int snooze = 5; // Snooze time in minute
 #define FPSerial Serial1
 #define PIN        4 // Neopixel pin
 #define NUMPIXELS 24 // Popular NeoPixel ring size
+#define EEPROM_SIZE 12
 
 const byte RXD2 = 16; // Connects to module's TX => 16
 const byte TXD2 = 17; // Connects to module's RX => 17
@@ -56,12 +58,17 @@ void setup() {
   pixels.show();
   Serial.begin(115200);
 
+    //Init EEPROM
+ EEPROM.begin(EEPROM_SIZE);
+ minutes = EEPROM.read(0);
+ hours =  EEPROM.read(1);
+
+
     WiFiManager manager;    
-     
+  // manager.resetSettings();
    manager.setTimeout(180);
   //fetches ssid and password and tries to connect, if connections succeeds it starts an access point with the name called "FLUX_CAPACITOR" and waits in a blocking loop for configuration
   res = manager.autoConnect("FLUX_CAPACITOR","password");
-  //manager.resetSettings();
   if(!res) {
   Serial.println("failed to connect and timeout occurred");
   ESP.restart(); //reset and try again
@@ -203,8 +210,8 @@ if(digitalRead(MINUTE_BUTTON) == true && digitalRead(HOUR_BUTTON) == true ) // P
   }
 
 if((currentMonth*30 + monthDay) >= 121 && (currentMonth*30 + monthDay) < 331){
-timeClient.setTimeOffset(utcOffsetInSeconds*UTC);} // Change daylight saving time - Summer
-else {timeClient.setTimeOffset((utcOffsetInSeconds*UTC) - 3600);} // Change daylight saving time - Winter
+timeClient.setTimeOffset(utcOffsetInSeconds*UTC);} // Change daylight saving time - Summer - change 31/03 at 00:00
+else {timeClient.setTimeOffset((utcOffsetInSeconds*UTC) - 3600);} // Change daylight saving time - Winter - change 31/10 at 00:00
 
 }
 
@@ -330,6 +337,9 @@ while (digitalRead(SET_STOP_BUTTON) == true)
   if (hours > 23){hours=0;}
 
 }
+EEPROM.write(0, minutes);
+EEPROM.write(1, hours);
+EEPROM.commit();
 }
 
 void printDetail(uint8_t type, int value){

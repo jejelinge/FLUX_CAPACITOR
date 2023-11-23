@@ -3,6 +3,7 @@
 #include "TM1637Display.h"
 #include "DFRobotDFPlayerMini.h"
 #include "Adafruit_NeoPixel.h"
+#include <EEPROM.h>
 
 //========================USEFUL VARIABLES=============================
 const char *ssid     = "SSID"; 
@@ -21,6 +22,7 @@ int snooze = 5; // Snooze time in minute
 #define FPSerial Serial1
 #define PIN        4 // Neopixel pin
 #define NUMPIXELS 24 // Popular NeoPixel ring size
+#define EEPROM_SIZE 12
 
 const byte RXD2 = 16; // Connects to module's TX => 16
 const byte TXD2 = 17; // Connects to module's RX => 17
@@ -29,8 +31,8 @@ DFRobotDFPlayerMini myDFPlayer;
 void printDetail(uint8_t type, int value);
 
 float counter = 0;
-int hours = 0;
-int minutes = 0;
+int hours = 0 ;
+int minutes= 0 ;
 int flag_alarm = 0 ;
 int alarm_on_off=1;
 int h=0;
@@ -48,7 +50,7 @@ void setup() {
 
   pinMode(SET_STOP_BUTTON, INPUT);
   pinMode(HOUR_BUTTON, INPUT);
-  pinMode(MINUTE_BUTTON, INPUT);
+  pinMode(MINUTE_BUTTON, INPUT_PULLDOWN);
   pinMode(26, OUTPUT);
   pinMode(PIN, OUTPUT);
 
@@ -56,6 +58,12 @@ void setup() {
   pixels.setBrightness(0);
   pixels.show();
   Serial.begin(115200);
+  //Init EEPROM
+  EEPROM.begin(EEPROM_SIZE);
+ minutes = EEPROM.read(0);
+ hours =  EEPROM.read(1);
+
+
 
   WiFi.begin(ssid, password);
 
@@ -116,6 +124,11 @@ void loop() {
   h=1;
   Play_finished = 0;
   pixels.setBrightness(0);
+
+// Serial.print("Minutes EEPROM: ");
+// Serial.println(EEPROM.read(0));
+// Serial.print("Hours EEPROM: ");
+// Serial.println(EEPROM.read(1));
 
   timeClient.update();
   Serial.print("Time: ");
@@ -310,10 +323,12 @@ while (digitalRead(SET_STOP_BUTTON) == true)
 { 
   if (digitalRead(MINUTE_BUTTON) == true){
     minutes = minutes + 1;
+    
   }
 
   if (digitalRead(HOUR_BUTTON) == true){
     hours = hours + 1;
+    
   }
 
   red1.showNumberDecEx(hours,0b01000000,true,2,0);
@@ -325,6 +340,11 @@ while (digitalRead(SET_STOP_BUTTON) == true)
   if (hours > 23){hours=0;}
 
 }
+
+EEPROM.write(0, minutes);
+EEPROM.write(1, hours);
+EEPROM.commit();
+
 }
 
 void printDetail(uint8_t type, int value){
