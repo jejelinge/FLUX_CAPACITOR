@@ -31,6 +31,8 @@ void printDetail(uint8_t type, int value);
 float counter = 0;
 int hours = 0;
 int minutes = 0;
+int alarm_hours = 0;
+int alarm_minutes = 0;
 int flag_alarm = 0 ;
 int alarm_on_off=1;
 int h=0;
@@ -61,7 +63,7 @@ void setup() {
     //Init EEPROM
  EEPROM.begin(EEPROM_SIZE);
  minutes = EEPROM.read(0);
- hours =  EEPROM.read(1);
+ alarm_hours =  EEPROM.read(1);
 
 
     WiFiManager manager;    
@@ -178,7 +180,7 @@ if (digitalRead(SET_STOP_BUTTON) == true)
     hours = timeClient.getHours();
   }
 
-if (hours == timeClient.getHours() && flag_alarm == 0 && alarm_on_off == 1)
+if (alarm_hours == hours && flag_alarm == 0 && alarm_on_off == 1)
 {
   if (minutes == timeClient.getMinutes()) {
     flag_alarm=1;
@@ -236,76 +238,76 @@ else {timeClient.setTimeOffset((utcOffsetInSeconds*UTC) - 3600);} // Change dayl
 }
 
 void alarm() {
-  // count 0 to 88 m/h
-for(int u=0; u<89;u++){
-  delay(12-(u/8));
-  red1.showNumberDecEx(00,0b01000000,true,2,0);
-  red1.showNumberDecEx(u,0b01000000,true,2,2);
+    // count 0 to 88 m/h
+  for(int u=0; u<89;u++){
+    delay(12-(u/8));
+    red1.showNumberDecEx(00,0b01000000,true,2,0);
+    red1.showNumberDecEx(u,0b01000000,true,2,2);
 
-  //Flux capacitor acceleration
-  pixels.clear();
-  for(int i=0; i<8;i++){
-  pixels.setPixelColor(i, pixels.Color(255,(110+h),13+h));
-  pixels.setPixelColor((i+8), pixels.Color(255,(110+h),13+h));
-  pixels.setPixelColor((i+16), pixels.Color(255,(110+h),13+h));
-  delay(12-(h/8));
-  pixels.setBrightness(20+h);
-  pixels.show();
-
-  if(digitalRead(SET_STOP_BUTTON) == true){u=89;}
-
-  if(digitalRead(MINUTE_BUTTON) == true || digitalRead(HOUR_BUTTON) == true ) // Snooze if you push MIN or HOUR button
-    { 
-    Snooze();
-    }
-
-  }
-  h=h+1;
-}
-  
-  myDFPlayer.play(random(1,9)); //Playing the alarm sound
-  delay(1500);
-
-
-  while(digitalRead(SET_STOP_BUTTON) == false)
-  { 
-    h=1;
-    show_hour();
-   // Serial.println("dans la boucle");
-    digitalWrite(26,HIGH);
-  
-  // If you're not wake-up at the first song, it plays the next one
-    if (myDFPlayer.available())
-    {
-    printDetail(myDFPlayer.readType(), myDFPlayer.read());
-    if(Play_finished == 1) {
-    Play_finished = 0;
-    Serial.println("Next song");
-    myDFPlayer.play(random(1,9)); //Playing the alarm sound
-    }
-
-    }
-
-  //That's bzzzz the Neopixel  
-  pixels.clear();
+    //Flux capacitor acceleration
+    pixels.clear();
     for(int i=0; i<8;i++){
-    pixels.setPixelColor(i, pixels.Color(255,200,105));
-    pixels.setPixelColor((i+8), pixels.Color(255,200,105));
-    pixels.setPixelColor((i+16), pixels.Color(255,200,105));
-    delay(5);
-    pixels.setBrightness(110);
+    pixels.setPixelColor(i, pixels.Color(255,(110+h),13+h));
+    pixels.setPixelColor((i+8), pixels.Color(255,(110+h),13+h));
+    pixels.setPixelColor((i+16), pixels.Color(255,(110+h),13+h));
+    delay(12-(h/8));
+    pixels.setBrightness(20+h);
     pixels.show();
-    //Serial.println("Boucle neopixel");
-  }
 
-  if(digitalRead(MINUTE_BUTTON) == true || digitalRead(HOUR_BUTTON) == true ) // Snooze if you push MIN or HOUR button
+    if(digitalRead(SET_STOP_BUTTON) == true){u=89;}
+
+    if(digitalRead(MINUTE_BUTTON) == true || digitalRead(HOUR_BUTTON) == true ) // Snooze if you push MIN or HOUR button
+      { 
+      Snooze();
+      }
+
+    }
+    h=h+1;
+  }
+    
+    myDFPlayer.play(random(1,9)); //Playing the alarm sound
+    delay(1500);
+
+
+    while(digitalRead(SET_STOP_BUTTON) == false)
     { 
-    Snooze();
+      h=1;
+      show_hour();
+    // Serial.println("dans la boucle");
+      digitalWrite(26,HIGH);
+    
+    // If you're not wake-up at the first song, it plays the next one
+      if (myDFPlayer.available())
+      {
+      printDetail(myDFPlayer.readType(), myDFPlayer.read());
+      if(Play_finished == 1) {
+      Play_finished = 0;
+      Serial.println("Next song");
+      myDFPlayer.play(random(1,9)); //Playing the alarm sound
+      }
+
+      }
+
+    //That's bzzzz the Neopixel  
+    pixels.clear();
+      for(int i=0; i<8;i++){
+      pixels.setPixelColor(i, pixels.Color(255,200,105));
+      pixels.setPixelColor((i+8), pixels.Color(255,200,105));
+      pixels.setPixelColor((i+16), pixels.Color(255,200,105));
+      delay(5);
+      pixels.setBrightness(110);
+      pixels.show();
+      //Serial.println("Boucle neopixel");
     }
 
-  }
-  pixels.setBrightness(0);
-  pixels.show();
+    if(digitalRead(MINUTE_BUTTON) == true || digitalRead(HOUR_BUTTON) == true ) // Snooze if you push MIN or HOUR button
+      { 
+      Snooze();
+      }
+
+    }
+    pixels.setBrightness(0);
+    pixels.show();
 }
 
 void show_hour(){
@@ -345,20 +347,20 @@ while (digitalRead(SET_STOP_BUTTON) == true)
   }
 
   if (digitalRead(HOUR_BUTTON) == true){
-    hours = hours + 1;
+    alarm_hours = alarm_hours + 1;
   }
-
-  red1.showNumberDecEx(hours,0b01000000,true,2,0);
-  red1.showNumberDecEx(minutes,0b01000000,true,2,2);
+  if (minutes > 59){minutes=0;}
+  if (alarm_hours > 12){alarm_hours=0;}
  
  delay(100);
 
-  if (minutes > 59){minutes=0;}
-  if (hours > 23){hours=0;}
+  red1.showNumberDecEx(alarm_hours,0b01000000,true,2,0);
+  red1.showNumberDecEx(minutes,0b01000000,true,2,2);
+
 
 }
 EEPROM.write(0, minutes);
-EEPROM.write(1, hours);
+EEPROM.write(1, alarm_hours);
 EEPROM.commit();
 }
 
