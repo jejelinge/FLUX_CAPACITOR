@@ -180,7 +180,7 @@ if (digitalRead(SET_STOP_BUTTON) == true)
     hours = timeClient.getHours();
   }
 
-if (alarm_hours == hours && flag_alarm == 0 && alarm_on_off == 1)
+if (alarm_hours == timeClient.getHours() && flag_alarm == 0 && alarm_on_off == 1)
 {
   if (minutes == timeClient.getMinutes()) {
     flag_alarm=1;
@@ -350,7 +350,7 @@ while (digitalRead(SET_STOP_BUTTON) == true)
     alarm_hours = alarm_hours + 1;
   }
   if (minutes > 59){minutes=0;}
-  if (alarm_hours > 12){alarm_hours=0;}
+  if (alarm_hours > 23){alarm_hours=0;}
  
  delay(100);
 
