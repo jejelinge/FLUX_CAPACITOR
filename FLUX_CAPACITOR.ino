@@ -11,9 +11,10 @@
 //       Only write the alarm time to EEPROM if necessary to avoid wear and tear.
 //       Only update the alarm on/off LED if there is a state change.
 //       Save the alarm enabled status in the EEPROM and retrieve at startup.
-//       Activate sounds.
-//  v6 - Modified to get the sounds to work.
+//  v6 - Activate sounds.
+//       Modified to get the sounds to work.
 //       Use the playMp3Folder function to guarantee which file plays when requested by file number, e.g. not by the order added to the SD card.
+//  v7 - Add additional WiFi settings to try to solve occasional connection failures.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
@@ -156,6 +157,8 @@ void setup() {
  
 
   Serial.println("Connecting to WiFi.");
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFiManager manager;
   manager.setConnectTimeout(10);
   manager.setConnectRetries(5);
