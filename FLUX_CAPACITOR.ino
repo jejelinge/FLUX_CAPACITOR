@@ -11,7 +11,9 @@
 //       Only write the alarm time to EEPROM if necessary to avoid wear and tear.
 //       Only update the alarm on/off LED if there is a state change.
 //       Save the alarm enabled status in the EEPROM and retrieve at startup.
-//  v5 - Activate sounds.
+//       Activate sounds.
+//  v6 - Modified to get the sounds to work.
+//       Use the playMp3Folder function to guarantee which file plays when requested by file number, e.g. not by the order added to the SD card.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
@@ -24,10 +26,10 @@
 #include <EEPROM.h>
 #include <TimeLib.h>  //https://playground.arduino.cc/Code/Time/
 
-bool enableAudio = false;
+bool enableAudio = true;
 
 //========================USEFUL VARIABLES=============================
-uint16_t notification_volume = 25;          //Set volume value. From 0 to 30
+uint16_t notification_volume = 10;          //Set volume value. From 0 to 30
 int clockBrightness = 1;                    // Set displays brightness 0 to 7
 int snoozeLengthMinutes = 1;                // Snooze time in minute
 int refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time syncs from the NTP server.
@@ -38,7 +40,7 @@ int refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time s
 #define SET_STOP_BUTTON 34
 #define HOUR_BUTTON 33
 #define MINUTE_BUTTON 32
-#define FPSerial Serial1
+//#define FPSerial Serial1
 #define LEDS_PIN 4
 #define LEDS_COUNT 24
 #define EEPROM_SIZE 12
@@ -46,13 +48,13 @@ int refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time s
 #define UTC_OFFSET 1
 #define ALARM_ON_OFF_LED 26
 
+HardwareSerial FPSerial(1); 
 const byte RXD2 = 16;  // Connects to module's TX => 16
 const byte TXD2 = 17;  // Connects to module's RX => 17
 
 const long utcOffsetInSeconds = 0;  // GMT
 
 DFRobotDFPlayerMini myDFPlayer;
-
 void printDetail(uint8_t type, int value);
 
 int alarmHours = 0;
@@ -173,28 +175,30 @@ void setup() {
 
   timeClient.begin();
 
-  // if (enableAudio) {
-  //   FPSerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
-  //   Serial.println();
-  //   Serial.println(F("DFRobot DFPlayer Mini Demo"));
-  //   Serial.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
+  // Initialise the audio player.
+  if (enableAudio) {
+    FPSerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
+    Serial.println();
+    Serial.println(F("DFRobot DFPlayer Mini Demo"));
+    Serial.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
 
-  //   if (!myDFPlayer.begin(FPSerial, /*isACK = */ true, /*doReset = */ true)) {  //Use serial to communicate with mp3.
-  //     Serial.println(F("Unable to begin:"));
-  //     Serial.println(F("1.Please recheck the connection!"));
-  //     Serial.println(F("2.Please insert the SD card!"));
-  //     while (true) {
-  //       delay(0);  // Code to compatible with ESP8266 watch dog.
-  //     }
-  //   }
+    if (!myDFPlayer.begin(FPSerial, /*isACK = */ true, /*doReset = */ true)) {  //Use serial to communicate with mp3.
+      Serial.println(F("Unable to begin:"));
+      Serial.println(F("1.Please recheck the connection!"));
+      Serial.println(F("2.Please insert the SD card!"));
+      while (true) {
+        delay(0);  // Code to compatible with ESP8266 watch dog.
+      }
+    }
 
-  //   Serial.println(F("DFPlayer Mini online."));
+    Serial.println(F("DFPlayer Mini online."));
 
-  //   myDFPlayer.volume(notification_volume);
-  //   myDFPlayer.play(10);  //Play the first mp3
-  //   delay(100);
-  //   audioFinished = 0;
-  // }
+    myDFPlayer.setTimeOut(500); //Set serial communictaion time out 500ms
+
+    myDFPlayer.volume(notification_volume);
+    myDFPlayer.EQ(DFPLAYER_EQ_NORMAL);
+    myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
+  }
 
 
   Serial.println("Getting the time from the NTP server.");
@@ -216,6 +220,12 @@ void setup() {
   myTimer = timerBegin(1000000);  // timer frequency
   timerAttachInterrupt(myTimer, &onTimer);
   timerAlarm(myTimer, alarmLimit, true, 0);
+
+
+  //Play the first mp3
+  myDFPlayer.playMp3Folder(10);
+  delay(100);
+  audioFinished = 0;
 
   Serial.println("Flux capacitor startup flash.");
   for (int v = 0; v < 30; v++) {
@@ -245,9 +255,9 @@ void setup() {
   } else digitalWrite(ALARM_ON_OFF_LED, LOW);
 
   Serial.println("Starting main loop.");
-  // if (enableAudio) {
-  //   myDFPlayer.play(14);
-  // }
+  if (enableAudio) {
+    myDFPlayer.playMp3Folder(14);
+  }
 }
 
 void loop() {
@@ -289,16 +299,16 @@ void loop() {
     skipTimerLogic = false;
   }
 
-  // if (enableAudio) {
-  //   if (myDFPlayer.available()) {
-  //     printDetail(myDFPlayer.readType(), myDFPlayer.read());  //Print the detail message from DFPlayer to handle different errors and states.
-  //   }
-  // }
+  if (enableAudio) {
+    if (myDFPlayer.available()) {
+      printDetail(myDFPlayer.readType(), myDFPlayer.read());  //Print the detail message from DFPlayer to handle different errors and states.
+    }
+  }
 
   if (digitalRead(SET_STOP_BUTTON)) {
     Serial.println("Entering alarm setup.");
     Setup_alarm();
-    // if (enableAudio) myDFPlayer.stop();
+    if (enableAudio) myDFPlayer.stop();
     Serial.println("Exit alarm setup.");
   }
 
@@ -341,7 +351,7 @@ void loop() {
     if (digitalRead(MINUTE_BUTTON))  // Push Min and Hour simultaneously to switch ON or OFF the alarm
     {
       pixels.setBrightness(0);
-      // if (enableAudio) myDFPlayer.play(13);
+      if (enableAudio) myDFPlayer.playMp3Folder(13);
       pixels.show();
     }
   }
@@ -449,7 +459,7 @@ void alarm() {
   // If we haven't yet snoozed the continue.
   if (!snoozed) {
     //skipTimerLogic = false;
-    // if (enableAudio) myDFPlayer.play(random(1, 9));  //Playing the alarm sound
+    if (enableAudio) myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
     delay(1500);
 
     colonVisible = true;
@@ -461,17 +471,17 @@ void alarm() {
       maybeUpdateClock();
       //digitalWrite(ALARM_ON_OFF_LED, HIGH);
 
-      // If you're not wake-up at the first song, it plays the next one
-      // if (enableAudio) {
-      //   if (myDFPlayer.available()) {
-      //     printDetail(myDFPlayer.readType(), myDFPlayer.read());
-      //     if (audioFinished == 1) {
-      //       audioFinished = 0;
-      //       Serial.println("Next song");
-      //       myDFPlayer.play(random(1, 9));  //Playing the alarm sound
-      //     }
-      //   }
-      // }
+      //If you're not wake-up at the first song, it plays the next one
+      if (enableAudio) {
+        if (myDFPlayer.available()) {
+          printDetail(myDFPlayer.readType(), myDFPlayer.read());
+          if (audioFinished == 1) {
+            audioFinished = 0;
+            Serial.println("Next song");
+            myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
+          }
+        }
+      }
 
       //That's bzzzz the Neopixel
       for (int i = 0; i < 24; i++) {
@@ -498,8 +508,8 @@ void alarm() {
     }
   }
 
-  // if (enableAudio) myDFPlayer.stop();
-  // audioFinished = 0;
+  if (enableAudio) myDFPlayer.stop();
+  audioFinished = 0;
 
   pixels.setBrightness(0);
   pixels.show();
