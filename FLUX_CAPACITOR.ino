@@ -15,9 +15,13 @@
 //       Modified to get the sounds to work.
 //       Use the playMp3Folder function to guarantee which file plays when requested by file number, e.g. not by the order added to the SD card.
 //  v7 - Add additional WiFi settings to try to solve occasional connection failures.
+//  v8 - Reduced volume.
+//       Changed EQ setting to add more bass.
+//       Increased snooze length.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
+//       TODO: Make the volume configurable by using the hour/minute buttons.
 
 #include "WiFiManager.h"          // https://github.com/tzapu/WiFiManager
 #include "NTPClient.h"            // https://github.com/arduino-libraries/NTPClient
@@ -30,9 +34,9 @@
 bool enableAudio = true;
 
 //========================USEFUL VARIABLES=============================
-uint16_t notification_volume = 10;          //Set volume value. From 0 to 30
+uint16_t notification_volume = 12;          //Set volume value. From 0 to 30
 int clockBrightness = 1;                    // Set displays brightness 0 to 7
-int snoozeLengthMinutes = 1;                // Snooze time in minute
+int snoozeLengthMinutes = 5;                // Snooze time in minute
 int refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time syncs from the NTP server.
 //=====================================================================
 
@@ -199,7 +203,7 @@ void setup() {
     myDFPlayer.setTimeOut(500); //Set serial communictaion time out 500ms
 
     myDFPlayer.volume(notification_volume);
-    myDFPlayer.EQ(DFPLAYER_EQ_NORMAL);
+    myDFPlayer.EQ(DFPLAYER_EQ_BASS);
     myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
   }
 
