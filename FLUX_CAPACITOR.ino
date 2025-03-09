@@ -1,4 +1,8 @@
-//  v2 - Ported code from BTTF logo & clock unit
+//  v2 - Ported code from BTTF logo & clock unit.
+//  v3 - Prevent display switching to time and back when buttons are pressed.
+//     - Clear the neopixels correctly.
+//     - Removed snooze code for the time being.
+//     - Don't update the display colon when the alarm is in progress to avoid gaps in between neopixel updates.
 
 #include "WiFiManager.h"          // https://github.com/tzapu/WiFiManager
 #include "NTPClient.h"            // https://github.com/arduino-libraries/NTPClient
@@ -38,8 +42,8 @@ DFRobotDFPlayerMini myDFPlayer;
 void printDetail(uint8_t type, int value);
 
 float counter = 0;
-int hours = 0;
-int minutes = 0;
+int alarmHours = 0;
+int alarmMinutes = 0;
 int flag_alarm = 0;
 int alarm_on_off = 1;
 int h = 0;
@@ -48,7 +52,7 @@ int Play_finished = 0;
 int easter_egg = 0;
 bool res;
 
-int currentMinutes = 0, currentHours = 0, currentYear = 0, currentMonth = 0, monthDay = 0, previousMinutes = 0;
+int currentMinutes = 0, currentHours = 0, currentYear = 0, currentMonth = 0, currentDay = 0, previousMinutes = 0;
 long epochTime = 0;
 unsigned long lastColonToggleTime = 0;
 bool colonVisible = true;                         // Start with the colon visible
@@ -69,10 +73,13 @@ hw_timer_t* myTimer = NULL;
 void IRAM_ATTR onTimer() {
   // Toggle the colon
   colonVisible = !colonVisible;
+
   // Only update if we have previously retrieved the time
-  // and we are not in the middle of processing a button press.
+  // and we are not in the middle of processing a button press or
+  // other time-sensitive action.
   if (currentYear > 0 && !skipTimerLogic) updateTimeDisplay();
 
+  // Increment the time by 1s.
   epochTime += 1;
 
   // Keep track of how many times we have got here.
@@ -95,8 +102,8 @@ void setup() {
 
   //Init EEPROM
   EEPROM.begin(EEPROM_SIZE);
-  minutes = EEPROM.read(0);
-  hours = EEPROM.read(1);
+  alarmMinutes = EEPROM.read(0);
+  alarmHours = EEPROM.read(1);
 
   WiFiManager manager;
 
@@ -159,7 +166,11 @@ void setup() {
   timerAlarm(myTimer, alarmLimit, true, 0);
 
   for (int v = 0; v < 30; v++) {
-    //pixels.clear();
+    // clear the pixels, equivalent to pixels.clear();
+    for (int i = 0; i < 24; i++) {
+      pixels.setLedColorData(i, 0, 0, 0);
+    }
+
     for (int i = 0; i < 8; i++) {
       pixels.setLedColorData(i, 100, 100, 100);
       pixels.setLedColorData((i + 8), 100, 100, 100);
@@ -191,36 +202,28 @@ void loop() {
   pixels.setBrightness(0);
 
   // Check to see if the time displays need to be updated.
-  if (timerCount > 0 && colonVisible) {
-    previousMinutes = currentMinutes;
-    setTime(epochTime);
-    currentYear = year();
-    currentMonth = month();
-    monthDay = day();
-    currentHours = hour();
-    currentMinutes = minute();
-    if (currentYear >= 2025 && previousMinutes != currentMinutes) {
-      updateTimeDisplay();
-      red1.setBrightness(clockBrightness);
-      checkDSTAndSetOffset();
-      timerCount = 0;
+  maybeUpdateClock();
+
+  if (digitalRead(MINUTE_BUTTON) || digitalRead(HOUR_BUTTON) || digitalRead(SET_STOP_BUTTON)) {
+    skipTimerLogic = true;
+  } else {
+    skipTimerLogic = false;
+  }
+
+  if (enableAudio) {
+    if (myDFPlayer.available()) {
+      printDetail(myDFPlayer.readType(), myDFPlayer.read());  //Print the detail message from DFPlayer to handle different errors and states.
     }
   }
 
-  // if (enableAudio) {
-  //   if (myDFPlayer.available()) {
-  //     printDetail(myDFPlayer.readType(), myDFPlayer.read());  //Print the detail message from DFPlayer to handle different errors and states.
-  //   }
-  // }
-
-  if (digitalRead(SET_STOP_BUTTON) == true) {
+  if (digitalRead(SET_STOP_BUTTON)) {
     Setup_alarm();
     if (enableAudio) myDFPlayer.stop();
     digitalWrite(26, LOW);
   }
 
-  if (hours == timeClient.getHours() && flag_alarm == 0 && alarm_on_off == 1) {
-    if (minutes == timeClient.getMinutes()) {
+  if (alarmHours == currentHours && flag_alarm == 0 && alarm_on_off == 1) {
+    if (alarmMinutes == currentMinutes) {
       flag_alarm = 1;
       alarm();
       Serial.println("Sortie alarm");
@@ -231,21 +234,9 @@ void loop() {
     digitalWrite(26, HIGH);
   } else digitalWrite(26, LOW);
 
-  if (minutes != timeClient.getMinutes()) { flag_alarm = 0; }
+  if (alarmMinutes != currentMinutes) { flag_alarm = 0; }
 
-  // if (easter_egg == 1) {
-  //   //pixels.clear();
-  //   for (int i = 0; i < 8; i++) {
-  //     pixels.setLedColorData(i, 255, 110, 14);
-  //     pixels.setLedColorData((i + 8), 255, 110, 14);
-  //     pixels.setLedColorData((i + 16), 255, 110, 14);
-  //     delay(20);
-  //     pixels.setBrightness(23);
-  //     pixels.show();
-  //   }
-  // }
-
-  if (digitalRead(MINUTE_BUTTON) == true && digitalRead(HOUR_BUTTON) == true)  // Push Min and Hour simultanetly to switch ON or OFF the alarm
+  if (digitalRead(MINUTE_BUTTON) && digitalRead(HOUR_BUTTON))  // Push Min and Hour simultanetly to switch ON or OFF the alarm
   {
     if (alarm_on_off == 1) {
       alarm_on_off = 0;
@@ -255,21 +246,36 @@ void loop() {
     red1.showNumberDecEx(alarm_on_off, 0b01000000, true, 2, 2);
     delay(1000);
 
-    if (digitalRead(MINUTE_BUTTON) == true)  // Push Min and Hour simultanetly to switch ON or OFF the alarm
+    if (digitalRead(MINUTE_BUTTON))  // Push Min and Hour simultanetly to switch ON or OFF the alarm
     {
-      if (easter_egg == 0) {
-        easter_egg = 1;
-        if (enableAudio) myDFPlayer.play(12);
-      } else {
-        easter_egg = 0;
-        pixels.setBrightness(0);
-        if (enableAudio) myDFPlayer.play(13);
-        pixels.show();
-      }
+      easter_egg = 0;
+      pixels.setBrightness(0);
+      if (enableAudio) myDFPlayer.play(13);
+      pixels.show();
     }
   }
 }
 
+
+void maybeUpdateClock() {
+  if (timerCount > 0 && colonVisible && !digitalRead(MINUTE_BUTTON) && !digitalRead(HOUR_BUTTON) && !digitalRead(SET_STOP_BUTTON)) {
+
+    Serial.println('Entered time display update...');
+    previousMinutes = currentMinutes;
+    setTime(epochTime);
+    currentYear = year();
+    currentMonth = month();
+    currentDay = day();
+    currentHours = hour();
+    currentMinutes = minute();
+    if (currentYear >= 2025 && previousMinutes != currentMinutes) {
+      updateTimeDisplay();
+      red1.setBrightness(clockBrightness);
+      checkDSTAndSetOffset();
+      timerCount = 0;
+    }
+  }
+}
 
 void updateTimeDisplay() {
 
@@ -287,7 +293,7 @@ void updateTimeDisplay() {
 }
 
 void checkDSTAndSetOffset() {
-  if (isDST(currentMonth, monthDay, currentYear)) {
+  if (isDST(currentMonth, currentDay, currentYear)) {
     adjustTime(utcOffsetInSeconds + (UTC_OFFSET * 3600));  // Apply DST
     Serial.println("DST active, UTC+1");
   } else {
@@ -297,14 +303,19 @@ void checkDSTAndSetOffset() {
 }
 
 void alarm() {
+  skipTimerLogic = true;
   // count 0 to 88 m/h
   for (int u = 0; u < 89; u++) {
     delay(12 - (u / 8));
     red1.showNumberDecEx(00, 0b01000000, true, 2, 0);
     red1.showNumberDecEx(u, 0b01000000, true, 2, 2);
 
-    //Flux capacitor acceleration
-    //pixels.clear();
+    // Flux capacitor acceleration section.
+    // Clear the pixels, equivalent to pixels.clear();
+    for (int i = 0; i < 24; i++) {
+      pixels.setLedColorData(i, 0, 0, 0);
+    }
+
     for (int i = 0; i < 8; i++) {
       pixels.setLedColorData(i, 255, (110 + h), 13 + h);
       pixels.setLedColorData((i + 8), 255, (110 + h), 13 + h);
@@ -313,23 +324,27 @@ void alarm() {
       pixels.setBrightness(20 + h);
       pixels.show();
 
-      if (digitalRead(SET_STOP_BUTTON) == true) { u = 89; }
+      if (digitalRead(SET_STOP_BUTTON)) { u = 89; }
 
-      if (digitalRead(MINUTE_BUTTON) == true || digitalRead(HOUR_BUTTON) == true)  // Snooze if you push MIN or HOUR button
-      {
-        Snooze();
-      }
+      // if (digitalRead(MINUTE_BUTTON) || digitalRead(HOUR_BUTTON))  // Snooze if you push MIN or HOUR button
+      // {
+      //   //Snooze();
+      //   // Implement snooze here.
+      // }
     }
     h = h + 1;
   }
 
+  //skipTimerLogic = false;
   if (enableAudio) myDFPlayer.play(random(1, 9));  //Playing the alarm sound
   delay(1500);
 
+  colonVisible = true;
+  updateTimeDisplay();
 
-  while (digitalRead(SET_STOP_BUTTON) == false) {
+  while (!digitalRead(SET_STOP_BUTTON)) {
     h = 1;
-    updateTimeDisplay();
+    maybeUpdateClock();
     // Serial.println("dans la boucle");
     digitalWrite(26, HIGH);
 
@@ -346,7 +361,9 @@ void alarm() {
     }
 
     //That's bzzzz the Neopixel
-    //pixels.clear();
+    for (int i = 0; i < 24; i++) {
+      pixels.setLedColorData(i, 0, 0, 0);
+    }
     for (int i = 0; i < 8; i++) {
       pixels.setLedColorData(i, 255, 200, 105);
       pixels.setLedColorData((i + 8), 255, 200, 105);
@@ -357,57 +374,60 @@ void alarm() {
       //Serial.println("Boucle neopixel");
     }
 
-    if (digitalRead(MINUTE_BUTTON) == true || digitalRead(HOUR_BUTTON) == true)  // Snooze if you push MIN or HOUR button
-    {
-      Snooze();
-    }
+    // if (digitalRead(MINUTE_BUTTON) || digitalRead(HOUR_BUTTON) )  // Snooze if you push MIN or HOUR button
+    // {
+    //     //Snooze();
+    //     // Implement snooze here.
+    // }
   }
   pixels.setBrightness(0);
   pixels.show();
+  skipTimerLogic = false;
 }
 
 
-// Snooze if you'd like to sleep few minutes more
-// You can set the snooze time with the "snooze" variable at the beginning of the code
-void Snooze() {
+// // Snooze if you'd like to sleep few minutes more
+// // You can set the snooze time with the "snooze" variable at the beginning of the code
+// void Snooze() {
+//   skipTimerLogic = false;
 
-  if (enableAudio) myDFPlayer.stop();
-  pixels.setBrightness(5);
-  pixels.show();
+//   if (enableAudio) myDFPlayer.stop();
+//   pixels.setBrightness(5);
+//   pixels.show();
 
-  for (int i = 0; i < (snooze * 600); i++) {
-    waitMilliseconds(68);
-    updateTimeDisplay();
-    Serial.println("snooze");
-    Serial.println(i);
-    if (digitalRead(SET_STOP_BUTTON) == true) { i = snooze * 600; }
-  }
+//   for (int i = 0; i < (snooze * 600); i++) {
+//     waitMilliseconds(68);
+//     updateTimeDisplay();
+//     Serial.println("snooze");
+//     Serial.println(i);
+//     if (digitalRead(SET_STOP_BUTTON)) { i = snooze * 600; }
+//   }
 
-  alarm();
-  Play_finished = 0;
-}
+//   alarm();
+//   Play_finished = 0;
+// }
 
 void Setup_alarm() {
 
-  while (digitalRead(SET_STOP_BUTTON) == true) {
-    if (digitalRead(MINUTE_BUTTON) == true) {
-      minutes = minutes + 1;
+  while (digitalRead(SET_STOP_BUTTON)) {
+    if (digitalRead(MINUTE_BUTTON)) {
+      alarmMinutes = alarmMinutes + 1;
     }
 
-    if (digitalRead(HOUR_BUTTON) == true) {
-      hours = hours + 1;
+    if (digitalRead(HOUR_BUTTON)) {
+      alarmHours = alarmHours + 1;
     }
 
-    red1.showNumberDecEx(hours, 0b01000000, true, 2, 0);
-    red1.showNumberDecEx(minutes, 0b01000000, true, 2, 2);
+    red1.showNumberDecEx(alarmHours, 0b01000000, true, 2, 0);
+    red1.showNumberDecEx(alarmMinutes, 0b01000000, true, 2, 2);
 
     delay(100);
 
-    if (minutes > 59) { minutes = 0; }
-    if (hours > 23) { hours = 0; }
+    if (alarmMinutes > 59) { alarmMinutes = 0; }
+    if (alarmHours > 23) { alarmHours = 0; }
   }
-  EEPROM.write(0, minutes);
-  EEPROM.write(1, hours);
+  EEPROM.write(0, alarmMinutes);
+  EEPROM.write(1, alarmHours);
   EEPROM.commit();
 }
 
@@ -483,24 +503,24 @@ void waitMilliseconds(uint16_t msWait) {
   }
 }
 
-bool isDST(int currentMonth, int monthDay, int currentYear) {
-  int lastSundayInMarch = getLastSundayOfMonth(3, currentYear);
-  int lastSundayInOctober = getLastSundayOfMonth(10, currentYear);
-  int dayOfYear = getDayOfYear(currentMonth, monthDay, currentYear);
+bool isDST(int month, int day, int year) {
+  int lastSundayInMarch = getLastSundayOfMonth(3, year);
+  int lastSundayInOctober = getLastSundayOfMonth(10, year);
+  int dayOfYear = getDayOfYear(month, day, year);
   return (dayOfYear >= lastSundayInMarch && dayOfYear < lastSundayInOctober);
 }
 
-int getDayOfYear(int currentMonth, int monthDay, int year) {
+int getDayOfYear(int month, int day, int year) {
   int daysInMonth[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
   if (isLeapYear(year)) {
     daysInMonth[1] = 29;  // Leap year adjustment
   }
 
   int dayOfYear = 0;
-  for (int i = 0; i < currentMonth - 1; i++) {
+  for (int i = 0; i < month - 1; i++) {
     dayOfYear += daysInMonth[i];
   }
-  return dayOfYear + monthDay;
+  return dayOfYear + day;
 }
 
 bool isLeapYear(int year) {
