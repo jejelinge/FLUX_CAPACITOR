@@ -22,6 +22,7 @@
 //          1. Hour pressed and held, then set/stop button pressed toggles alarm status.
 //          2. Hour pressed and held, then minute button pressed increments volume level, loops around to level 1.
 //          3. Minute pressed and held, then hour buttom pressed increments display brightness, loops around to level 1.
+//  v10 - Pause the timer logic when the set/stop button is pressed.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
@@ -333,10 +334,12 @@ void loop() {
   }
 
   if (digitalRead(SET_STOP_BUTTON)) {
+    skipTimerLogic = true;
     Serial.println("Entering alarm setup.");
     Setup_alarm();
     if (enableAudio) myDFPlayer.stop();
     Serial.println("Exit alarm setup.");
+    skipTimerLogic = false;
   }
 
   if (alarmHours == currentHours && flag_alarm == 0 && alarm_on_off == 1) {
