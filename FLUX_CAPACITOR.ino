@@ -23,63 +23,57 @@
 //          2. Hour pressed and held, then minute button pressed increments volume level, loops around to level 1.
 //          3. Minute pressed and held, then hour buttom pressed increments display brightness, loops around to level 1.
 //  v10 - Pause the timer logic when the set/stop button is pressed.
+//  v11 - Made the date display format configurable - supports MMDD or DDMM.
+//      - Optimised variable types.
+//      - Allowed hard-coded WiFi credentials. If not specified then the config portal will launch.
+//      - Removed enableAudio variable, it was only used during testing when waiting for audio board to arrive.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
 
-#include "WiFiManager.h"          // https://github.com/tzapu/WiFiManager
-#include "NTPClient.h"            // https://github.com/arduino-libraries/NTPClient
-#include "TM1637Display.h"        // https://github.com/avishorp/TM1637
-#include "DFRobotDFPlayerMini.h"  // https://github.com/DFRobot/DFRobotDFPlayerMini
-#include "ESP32_WS2812_Lib.h"     // https://github.com/Zhentao-Lin/ESP32_WS2812_Lib
+#include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager
+#include <NTPClient.h>            // https://github.com/arduino-libraries/NTPClient
+#include <TM1637Display.h>        // https://github.com/avishorp/TM1637
+#include <ESP32_WS2812_Lib.h>     // https://github.com/Zhentao-Lin/ESP32_WS2812_Lib
+#include <TimeLib.h>              // https://playground.arduino.cc/Code/Time/
+#include <DFRobotDFPlayerMini.h>  // https://github.com/DFRobot/DFRobotDFPlayerMini
 #include <EEPROM.h>
-#include <TimeLib.h>  //https://playground.arduino.cc/Code/Time/
-
-bool enableAudio = true;
-
-//========================USEFUL VARIABLES=============================
-int clockBrightness = 1;                    // Set displays brightness 0 to 7
-int snoozeLengthMinutes = 5;                // Snooze time in minute
-int refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time syncs from the NTP server.
-//=====================================================================
 
 #define DISPLAY_CLK 21
 #define DISPLAY_DIO 22
 #define SET_STOP_BUTTON 34
 #define HOUR_BUTTON 33
 #define MINUTE_BUTTON 32
-//#define FPSerial Serial1
 #define LEDS_PIN 4
 #define LEDS_COUNT 24
-#define EEPROM_SIZE 12
+#define EEPROM_SIZE 5
 #define CHANNEL 0
 #define UTC_OFFSET 1
 #define ALARM_ON_OFF_LED 26
+#define EEPROM_ALARM_MINUTES 0
+#define EEPROM_ALARM_HOURS 1
+#define EEPROM_ALARM_STATE 2
+#define EEPROM_NOTIFICATION_VOLUME 3
+#define EEPROM_CLOCK_BRIGHTNESS 4
 
-HardwareSerial FPSerial(1);
-const byte RXD2 = 16;  // Connects to module's TX => 16
-const byte TXD2 = 17;  // Connects to module's RX => 17
+//========================USEFUL VARIABLES=============================
+int snoozeLengthMinutes = 5;  // Snooze time in minutes
+int utcOffsetInSeconds = 0;   // Non-DST Offset in seconds
+byte dateDisplayFormat = 2;   // Date display format, 1 = MMDD, 2 = DDMM
+bool clock24h = true;         // If false then 12H, if true then 24H.
+const char* ssid = "";        // YOUR SSID HERE - leave empty to use WiFi management portal
+const char* password = "";    // WIFI PASSWORD HERE
+//=====================================================================
 
-const long utcOffsetInSeconds = 0;  // GMT
+byte refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time syncs from the NTP server.
+byte clockBrightness;
 
-DFRobotDFPlayerMini myDFPlayer;
-void printDetail(uint8_t type, int value);
-
-int alarmHours = 0;
-int alarmMinutes = 0;
-int flag_alarm = 0;
-int alarm_on_off = 1;
-int h = 0;
-
-int notification_volume = 5;
-int audioFinished = 0;
-
-int currentMinutes = 0, currentHours = 0, currentYear = 0, currentMonth = 0, currentDay = 0, previousMinutes = 0;
+byte currentMinutes = 0, currentHours = 0, currentMonth = 0, currentDay = 0, previousMinutes = 0;
+int currentYear = 0;
 long epochTimeCurrent = 0;
 long epochTimeSnoozed = 0;
 long epochTimeNTP = 0;
 long epochTimeLocalLastRefreshFromNTP = 0;  //Tracks the local calculated time that the last NTP refresh was attempted.
-bool snoozed = false;
 unsigned long lastColonToggleTime = 0;
 bool colonVisible = true;                         // Start with the colon visible
 const unsigned long COLON_FLASH_INTERVAL = 1000;  // Interval for flashing (1000ms)
@@ -112,9 +106,24 @@ void IRAM_ATTR onTimer() {
   timerCount += 1;
 }
 
+HardwareSerial FPSerial(1);
+const byte RXD2 = 16;  // Connects to module's TX => 16
+const byte TXD2 = 17;  // Connects to module's RX => 17
+
+DFRobotDFPlayerMini myDFPlayer;
+void printDetail(uint8_t type, int value);
+
+byte alarmHours = 0, alarmMinutes = 0;
+int flag_alarm = 0;
+int alarm_on_off = 1;
+bool snoozed = false;
+
+byte notification_volume;
+byte audioFinished = 0;
+
 void setup() {
 
-  Serial.begin(9600);
+  Serial.begin(9600);  // Start Serial for Debugging
   Serial.println("Initialising.");
 
   pinMode(SET_STOP_BUTTON, INPUT);
@@ -123,6 +132,7 @@ void setup() {
   pinMode(ALARM_ON_OFF_LED, OUTPUT);
   pinMode(LEDS_PIN, OUTPUT);
 
+  // Pin initialization
   pixels.begin();
   pixels.setBrightness(0);
   pixels.show();
@@ -133,12 +143,13 @@ void setup() {
   red1.showNumberDecEx(0, 0b00000000, true);
 
   //Init EEPROM
-  Serial.println("Retrieving the alarm time and status from EEPROM.");
+  Serial.println("Retrieving the saved setting values from EEPROM.");
   EEPROM.begin(EEPROM_SIZE);
-  alarmMinutes = EEPROM.read(0);
-  alarmHours = EEPROM.read(1);
-  alarm_on_off = EEPROM.read(2);
-  notification_volume = EEPROM.read(3);
+  alarmMinutes = EEPROM.read(EEPROM_ALARM_MINUTES);
+  alarmHours = EEPROM.read(EEPROM_ALARM_HOURS);
+  alarm_on_off = EEPROM.read(EEPROM_ALARM_STATE);
+  notification_volume = EEPROM.read(EEPROM_NOTIFICATION_VOLUME);
+  clockBrightness = EEPROM.read(EEPROM_CLOCK_BRIGHTNESS);
 
   Serial.print("Alarm time: ");
   Serial.print(alarmHours);
@@ -148,86 +159,98 @@ void setup() {
   Serial.print("Alarm enabled status: ");
   Serial.println(alarm_on_off);
 
-  Serial.print("Motification volume: ");
+  Serial.print("Notification volume: ");
   Serial.println(notification_volume);
+
+  Serial.print("Clock brightness: ");
+  Serial.println(clockBrightness);
 
   // Check for out of range values and reset to 00:00 if found.
   if (alarmMinutes > 59 || alarmHours > 23) {
     Serial.println("Out of range value found for alarm time, resetting to 00:00.");
-    EEPROM.write(0, 0);
-    EEPROM.write(1, 0);
-    EEPROM.commit();
     alarmMinutes = 0;
     alarmHours = 0;
+    EEPROM.write(EEPROM_ALARM_MINUTES, alarmMinutes);
+    EEPROM.write(EEPROM_ALARM_HOURS, alarmHours);
+    EEPROM.commit();
   }
 
   if (alarm_on_off > 1) {
     Serial.println("Out of range value found for alarm on/off, resetting to ON as a precaution.");
-    EEPROM.write(2, 1);
-    EEPROM.commit();
     alarm_on_off = 1;
+    EEPROM.write(EEPROM_ALARM_STATE, alarm_on_off);
+    EEPROM.commit();
   }
 
   if (notification_volume < 1 || notification_volume > 15) {
     Serial.println("Out of range value found for notification volume, resetting to level 5 as a precaution.");
-    EEPROM.write(3, 5);
-    EEPROM.commit();
     notification_volume = 5;
+    EEPROM.write(EEPROM_NOTIFICATION_VOLUME, notification_volume);
+    EEPROM.commit();
   }
 
-  clockBrightness = EEPROM.read(4);
+  if (clockBrightness < 0 || clockBrightness > 3) {
+    Serial.println("Out of range value found for clock brightness, resetting to level 2 as a precaution.");
+    clockBrightness = 2;
+    EEPROM.write(EEPROM_CLOCK_BRIGHTNESS, clockBrightness);
+    EEPROM.commit();
+  }
 
-  // Try to retrieve the saved clockBrightness, default to 3 if out of range.
-  if (clockBrightness > 4) clockBrightness = 3;
-  if (clockBrightness < 0) clockBrightness = 3;
-
+  // Connect to WiFi. Attempt to connect to saved details first.
   Serial.println("Connecting to WiFi.");
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-  WiFiManager manager;
-  manager.setConnectTimeout(10);
-  manager.setConnectRetries(5);
-  if (manager.getWiFiIsSaved()) {
-    manager.setEnableConfigPortal(false);
-    if (!manager.autoConnect("FLUX_CAPACITOR", "password")) {
-      manager.setEnableConfigPortal(true);
-      manager.setTimeout(60);
+
+  if (strlen(ssid) == 0) {
+    Serial.println("Using credentials saved via portal.");
+    WiFiManager manager;
+    manager.setConnectTimeout(10);
+    manager.setConnectRetries(5);
+    if (manager.getWiFiIsSaved()) {
+      manager.setEnableConfigPortal(false);
       if (!manager.autoConnect("FLUX_CAPACITOR", "password")) {
-        Serial.println("Connection failed, restarting...");
-        ESP.restart();  // Reset and try again
+        manager.setEnableConfigPortal(true);
+        manager.setTimeout(180);
+        if (!manager.autoConnect("FLUX_CAPACITOR", "password")) {
+          Serial.println("Connection failed, restarting...");
+          ESP.restart();  // Reset and try again
+        }
       }
     }
+  } else {
+    Serial.println("Using hard-coded credentials.");
+    WiFi.begin(ssid, password);
   }
-  Serial.println("Successfully connected to WiFi.");
-  delay(3000);
 
-  timeClient.begin();
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("Successfully connected to WiFi.");
 
   // Initialise the audio player.
-  if (enableAudio) {
-    FPSerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
-    Serial.println();
-    Serial.println(F("DFRobot DFPlayer Mini Demo"));
-    Serial.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
+  FPSerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
+  Serial.println();
+  Serial.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
 
-    if (!myDFPlayer.begin(FPSerial, /*isACK = */ true, /*doReset = */ true)) {  //Use serial to communicate with mp3.
-      Serial.println(F("Unable to begin:"));
-      Serial.println(F("1.Please recheck the connection!"));
-      Serial.println(F("2.Please insert the SD card!"));
-      while (true) {
-        delay(0);  // Code to compatible with ESP8266 watch dog.
-      }
+  if (!myDFPlayer.begin(FPSerial, /*isACK = */ true, /*doReset = */ true)) {  //Use serial to communicate with mp3.
+    Serial.println(F("Unable to begin:"));
+    Serial.println(F("1.Please recheck the connection!"));
+    Serial.println(F("2.Please insert the SD card!"));
+    while (true) {
+      delay(0);  // Code to compatible with ESP8266 watch dog.
     }
-
-    Serial.println(F("DFPlayer Mini online."));
-
-    myDFPlayer.setTimeOut(500);  //Set serial communictaion time out 500ms
-
-    myDFPlayer.volume(notification_volume);
-    myDFPlayer.EQ(DFPLAYER_EQ_BASS);
-    myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
   }
 
+  Serial.println(F("DFPlayer Mini online."));
+
+  myDFPlayer.setTimeOut(500);  //Set serial communictaion time out 500ms
+  myDFPlayer.volume(notification_volume);
+  myDFPlayer.EQ(DFPLAYER_EQ_BASS);
+  myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
+
+  timeClient.begin();
 
   Serial.println("Getting the time from the NTP server.");
   epochTimeNTP = getEpochTimeFromNTPServer();
@@ -249,8 +272,7 @@ void setup() {
   timerAttachInterrupt(myTimer, &onTimer);
   timerAlarm(myTimer, alarmLimit, true, 0);
 
-
-  //Play the first mp3
+  // Play the startup mp3
   myDFPlayer.playMp3Folder(10);
   delay(100);
   audioFinished = 0;
@@ -283,16 +305,11 @@ void setup() {
   } else digitalWrite(ALARM_ON_OFF_LED, LOW);
 
   Serial.println("Starting main loop.");
-  if (enableAudio) {
-    myDFPlayer.playMp3Folder(14);
-  }
+  myDFPlayer.playMp3Folder(14);
 }
 
 void loop() {
 
-  //pixels.clear();
-  //show_hour();
-  h = 1;
   audioFinished = 0;
   pixels.setBrightness(0);
 
@@ -321,23 +338,15 @@ void loop() {
   // Check to see if the time displays need to be updated.
   maybeUpdateClock();
 
-  if (digitalRead(MINUTE_BUTTON) || digitalRead(HOUR_BUTTON) || digitalRead(SET_STOP_BUTTON)) {
-    skipTimerLogic = true;
-  } else {
-    skipTimerLogic = false;
-  }
-
-  if (enableAudio) {
-    if (myDFPlayer.available()) {
-      printDetail(myDFPlayer.readType(), myDFPlayer.read());  //Print the detail message from DFPlayer to handle different errors and states.
-    }
+  if (myDFPlayer.available()) {
+    printDetail(myDFPlayer.readType(), myDFPlayer.read());  //Print the detail message from DFPlayer to handle different errors and states.
   }
 
   if (digitalRead(SET_STOP_BUTTON)) {
     skipTimerLogic = true;
     Serial.println("Entering alarm setup.");
     Setup_alarm();
-    if (enableAudio) myDFPlayer.stop();
+    myDFPlayer.stop();
     Serial.println("Exit alarm setup.");
     skipTimerLogic = false;
   }
@@ -353,7 +362,7 @@ void loop() {
 
   if (alarmMinutes != currentMinutes) { flag_alarm = 0; }
 
-  // Push Hour button and then and set/stop button to switch ON or OFF the alarm
+  // Push and hold Hour button and then and press set/stop button to switch ON or OFF the alarm
   if (digitalRead(HOUR_BUTTON) && !digitalRead(SET_STOP_BUTTON) && !digitalRead(MINUTE_BUTTON)) {
     // Disable the colon update for the duration of the button handler
     skipTimerLogic = true;
@@ -372,7 +381,7 @@ void loop() {
         }
 
         Serial.println("Writing new alarm enabled status to EEPROM.");
-        EEPROM.write(2, alarm_on_off);
+        EEPROM.write(EEPROM_ALARM_STATE, alarm_on_off);
         EEPROM.commit();
 
         red1.showNumberDecEx(00, 0b00000000, true, 2, 0);
@@ -381,7 +390,7 @@ void loop() {
 
         if (digitalRead(MINUTE_BUTTON)) {
           pixels.setBrightness(0);
-          if (enableAudio) myDFPlayer.playMp3Folder(13);
+          myDFPlayer.playMp3Folder(13);
           pixels.show();
         }
       }
@@ -393,22 +402,20 @@ void loop() {
         }
 
         Serial.println("Writing new notification volume level to EEPROM.");
-        EEPROM.write(3, notification_volume);
+        EEPROM.write(EEPROM_NOTIFICATION_VOLUME, notification_volume);
         EEPROM.commit();
 
         myDFPlayer.volume(notification_volume);
         red1.showNumberDecEx(00, 0b00000000, true, 2, 0);
         red1.showNumberDecEx(notification_volume, 0b00000000, true, 2, 2);
-        if (enableAudio) {
-          myDFPlayer.playMp3Folder(14);
-        }
+        myDFPlayer.playMp3Folder(14);
         delay(750);
       }
     }
     skipTimerLogic = false;
   }
 
-  // Push Minute button and then and Hour button to increment the clock brightness
+  // Push and hold Minute button and then press Hour button to increment the clock brightness
   if (digitalRead(MINUTE_BUTTON) && !digitalRead(HOUR_BUTTON)) {
     // Disable the colon update for the duration of the button handler
     skipTimerLogic = true;
@@ -417,7 +424,7 @@ void loop() {
         clockBrightness = (clockBrightness + 1) % 4;  // Cycle through 0-4
 
         Serial.println("Writing new clock brightness level to EEPROM.");
-        EEPROM.write(4, clockBrightness);
+        EEPROM.write(EEPROM_CLOCK_BRIGHTNESS, clockBrightness);
         EEPROM.commit();
 
         red1.setBrightness(clockBrightness);
@@ -429,10 +436,6 @@ void loop() {
     }
     skipTimerLogic = false;
   }
-
-
-
-
 
   // Check whether we are snoozed and the snooze duration has been passed
   if (snoozed && epochTimeCurrent - epochTimeSnoozed >= snoozeLengthMinutes * 60 && alarm_on_off == 1) {
@@ -464,17 +467,13 @@ void maybeUpdateClock() {
 }
 
 void updateTimeDisplay() {
-
   // For the time, add the flashing colon logic
-  uint8_t hour = currentHours;
-  uint8_t minute = currentMinutes;
-
   if (colonVisible) {
-    red1.showNumberDecEx(hour, 0b01000000, true, 2, 0);    // Display hours with colon
-    red1.showNumberDecEx(minute, 0b01000000, true, 2, 2);  // Display minutes with colon
+    red1.showNumberDecEx(currentHours, 0b01000000, true, 2, 0);    // Display hours with colon
+    red1.showNumberDecEx(currentMinutes, 0b01000000, true, 2, 2);  // Display minutes with colon
   } else {
-    red1.showNumberDecEx(hour, 0b00000000, true, 2, 0);    // Display hours without colon
-    red1.showNumberDecEx(minute, 0b00000000, true, 2, 2);  // Display minutes without colon
+    red1.showNumberDecEx(currentHours, 0b00000000, true, 2, 0);    // Display hours without colon
+    red1.showNumberDecEx(currentMinutes, 0b00000000, true, 2, 2);  // Display minutes without colon
   }
 }
 
@@ -489,6 +488,7 @@ void checkDSTAndSetOffset() {
 }
 
 void alarm() {
+  byte h = 1;
   skipTimerLogic = true;
   snoozed = false;
 
@@ -532,30 +532,25 @@ void alarm() {
     h = h + 1;
   }
 
-  // If we haven't yet snoozed the continue.
+  // If we haven't yet snoozed then continue.
   if (!snoozed) {
     //skipTimerLogic = false;
-    if (enableAudio) myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
+    myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
     delay(1500);
 
     colonVisible = true;
     updateTimeDisplay();
 
-
     while (!digitalRead(SET_STOP_BUTTON) && !snoozed) {
-      h = 1;
       maybeUpdateClock();
-      //digitalWrite(ALARM_ON_OFF_LED, HIGH);
 
       //If you're not wake-up at the first song, it plays the next one
-      if (enableAudio) {
-        if (myDFPlayer.available()) {
-          printDetail(myDFPlayer.readType(), myDFPlayer.read());
-          if (audioFinished == 1) {
-            audioFinished = 0;
-            Serial.println("Next song");
-            myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
-          }
+      if (myDFPlayer.available()) {
+        printDetail(myDFPlayer.readType(), myDFPlayer.read());
+        if (audioFinished == 1) {
+          audioFinished = 0;
+          Serial.println("Next song");
+          myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
         }
       }
 
@@ -570,7 +565,6 @@ void alarm() {
         delay(5);
         pixels.setBrightness(110);
         pixels.show();
-        //Serial.println("Boucle neopixel");
       }
 
       // If snooze has been requested then set variables to exit the WHILE loop.
@@ -584,7 +578,7 @@ void alarm() {
     }
   }
 
-  if (enableAudio) myDFPlayer.stop();
+  myDFPlayer.stop();
   audioFinished = 0;
 
   pixels.setBrightness(0);
@@ -617,8 +611,8 @@ void Setup_alarm() {
   // Only write to EEPROM if necessary.
   if (alarmHoursOriginal != alarmHours || alarmMinutesOriginal != alarmMinutes) {
     Serial.println("Saving the alarm time to EEPROM.");
-    EEPROM.write(0, alarmMinutes);
-    EEPROM.write(1, alarmHours);
+    EEPROM.write(EEPROM_ALARM_MINUTES, alarmMinutes);
+    EEPROM.write(EEPROM_ALARM_HOURS, alarmHours);
     EEPROM.commit();
   }
 }
