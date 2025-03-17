@@ -29,6 +29,12 @@
 //      - Removed enableAudio variable, it was only used during testing when waiting for audio board to arrive.
 //  v12 - Prevent a minutes value of 60 or an hours value of 24 being shown briefly when setting the alarm.
 //      - Added command to explicitly stop audio before playing next random file during snooze to prevent odd transition sounds.
+//  v13 - Ensure all MP3 files are played at least once without repetition in a given alarm activation.
+//      - Added additional key combination to manually trigger the alarm:
+//          Minute pressed and held, then set/stop button pressed.
+//      - Don't trigger the alarm when setting the alarm.
+//      - Enhanced alarm cancel behaviour.
+//      - Added various Serial.print statements.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
@@ -122,6 +128,8 @@ bool snoozed = false;
 
 byte notification_volume;
 byte audioFinished = 0;
+
+byte mp3PlayOrder[9];
 
 void setup() {
 
@@ -251,7 +259,14 @@ void setup() {
   myDFPlayer.volume(notification_volume);
   myDFPlayer.EQ(DFPLAYER_EQ_BASS);
   myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
+ 
+  randomSeed(analogRead(0)); // Seed randomness
 
+  // Initialize the MP3 play order array with numbers 1-9
+  for (int i = 0; i < 9; i++) {
+    mp3PlayOrder[i] = i + 1;
+  }
+  
   timeClient.begin();
 
   Serial.println("Getting the time from the NTP server.");
@@ -353,7 +368,7 @@ void loop() {
     skipTimerLogic = false;
   }
 
-  if (alarmHours == currentHours && flag_alarm == 0 && alarm_on_off == 1) {
+  if (alarmHours == currentHours && flag_alarm == 0 && alarm_on_off == 1 && !digitalRead(SET_STOP_BUTTON)) {
     if (alarmMinutes == currentMinutes) {
       Serial.println("Triggering the alarm.");
       flag_alarm = 1;
@@ -375,7 +390,8 @@ void loop() {
           Serial.println("Setting the alarm off.");
           alarm_on_off = 0;
           digitalWrite(ALARM_ON_OFF_LED, LOW);
-          snoozed = 0;
+          if (snoozed) Serial.println("Cancelling snooze.");
+          snoozed = false;
         } else {
           Serial.println("Setting the alarm on.");
           alarm_on_off = 1;
@@ -435,6 +451,12 @@ void loop() {
         red1.showNumberDecEx(clockBrightness + 1, 0b00000000, true, 2, 2);
         delay(750);  // Delay to allow display showing the new brightness level to be seen
       }
+
+      if (digitalRead(SET_STOP_BUTTON)) {
+        Serial.println("Triggering alarm manually.");
+        delay(1000);
+        alarm();
+      }
     }
     skipTimerLogic = false;
   }
@@ -491,8 +513,11 @@ void checkDSTAndSetOffset() {
 
 void alarm() {
   byte h = 1;
+  boolean cancelAlarm = false;
   skipTimerLogic = true;
   snoozed = false;
+  byte mp3PlayOrderIndex = 0;
+  shuffleMP3OrderArray();
 
   Serial.println("Count to 88.");
 
@@ -516,7 +541,10 @@ void alarm() {
       pixels.setBrightness(20 + h);
       pixels.show();
 
-      if (digitalRead(SET_STOP_BUTTON)) { u = 89; }
+      if (digitalRead(SET_STOP_BUTTON)) {
+        u = 89;
+        Serial.println("Alarm cancelled.");
+        cancelAlarm = true;}
 
       // Check for snooze. If requested then record the snooze request time (so that we can trigger the alarm
       // again at the end of the snooze period), and then exit the loop.
@@ -535,15 +563,17 @@ void alarm() {
   }
 
   // If we haven't yet snoozed then continue.
-  if (!snoozed) {
-    //skipTimerLogic = false;
-    myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
+  if (!snoozed && !cancelAlarm) {
+
+    Serial.print("Playing first MP3, number: ");
+    Serial.println(mp3PlayOrder[mp3PlayOrderIndex]);
+    myDFPlayer.playMp3Folder(mp3PlayOrder[mp3PlayOrderIndex]);  //Playing the alarm sound
     delay(1500);
 
     colonVisible = true;
     updateTimeDisplay();
 
-    while (!digitalRead(SET_STOP_BUTTON) && !snoozed) {
+    while (!cancelAlarm && !snoozed) {
       maybeUpdateClock();
 
       //If you're not wake-up at the first song, it plays the next one
@@ -551,9 +581,17 @@ void alarm() {
         printDetail(myDFPlayer.readType(), myDFPlayer.read());
         if (audioFinished == 1) {
           audioFinished = 0;
-          Serial.println("Next song");
           myDFPlayer.stop();
-          myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
+          // Increment the play order index to select the next song
+          mp3PlayOrderIndex +=1;
+          // If we have exceeded the array bound then reset and reshuffle the array.
+          if (mp3PlayOrderIndex > 8) {
+            mp3PlayOrderIndex = 0;
+            shuffleMP3OrderArray();
+          }
+          Serial.print("Playing next MP3, number: ");
+          Serial.println(mp3PlayOrder[mp3PlayOrderIndex]);
+          myDFPlayer.playMp3Folder(mp3PlayOrder[mp3PlayOrderIndex]);  //Playing the alarm sound
         }
       }
 
@@ -578,6 +616,9 @@ void alarm() {
         snoozed = true;
         epochTimeSnoozed = epochTimeCurrent;
       }
+
+      cancelAlarm = digitalRead(SET_STOP_BUTTON);
+      if (cancelAlarm) Serial.println("Alarm cancelled.");
     }
   }
 
@@ -586,6 +627,12 @@ void alarm() {
 
   pixels.setBrightness(0);
   pixels.show();
+  
+  // Prevent the alarm time from being displayed when the set/stop button is pressed
+  // to cancel the alarm. The delay just prevents the main loop from being returned-to immediately
+  // and the set/stop button handler from being entered.
+  delay(200);
+
   skipTimerLogic = false;
 }
 
@@ -744,4 +791,14 @@ long getEpochTimeFromNTPServer() {
     delay(50);
   }
   return epochTime;
+}
+
+// Function to shuffle the array using Fisher-Yates algorithm
+void shuffleMP3OrderArray() {
+  for (int i = 8; i > 0; i--) {
+    int j = random(0, i + 1);
+    int temp = mp3PlayOrder[i];
+    mp3PlayOrder[i] = mp3PlayOrder[j];
+    mp3PlayOrder[j] = temp;
+  }
 }
