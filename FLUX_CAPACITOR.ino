@@ -27,6 +27,8 @@
 //      - Optimised variable types.
 //      - Allowed hard-coded WiFi credentials. If not specified then the config portal will launch.
 //      - Removed enableAudio variable, it was only used during testing when waiting for audio board to arrive.
+//  v12 - Prevent a minutes value of 60 or an hours value of 24 being shown briefly when setting the alarm.
+//      - Added command to explicitly stop audio before playing next random file during snooze to prevent odd transition sounds.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
@@ -550,6 +552,7 @@ void alarm() {
         if (audioFinished == 1) {
           audioFinished = 0;
           Serial.println("Next song");
+          myDFPlayer.stop();
           myDFPlayer.playMp3Folder(random(1, 9));  //Playing the alarm sound
         }
       }
@@ -599,13 +602,13 @@ void Setup_alarm() {
       alarmHours = alarmHours + 1;
     }
 
+    if (alarmMinutes > 59) { alarmMinutes = 0; }
+    if (alarmHours > 23) { alarmHours = 0; }
+
     red1.showNumberDecEx(alarmHours, 0b01000000, true, 2, 0);
     red1.showNumberDecEx(alarmMinutes, 0b01000000, true, 2, 2);
 
     delay(100);
-
-    if (alarmMinutes > 59) { alarmMinutes = 0; }
-    if (alarmHours > 23) { alarmHours = 0; }
   }
 
   // Only write to EEPROM if necessary.
