@@ -17,8 +17,8 @@
 
 ## Adjusting Volume
 1. Press and hold **HOUR**.
-2. While holding it, press **MINUTE** to increase the volume (levels 1-15).
-3. When it reaches 15, the next press will reset it to 1.
+2. While holding it, press **MINUTE** to increase the volume (levels 1-10).
+3. When it reaches 10, the next press will reset it to 1.
 
 ## Adjusting Display Brightness
 1. Press and hold **MINUTE**.
