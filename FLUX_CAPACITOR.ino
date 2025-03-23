@@ -35,6 +35,8 @@
 //      - Don't trigger the alarm when setting the alarm.
 //      - Enhanced alarm cancel behaviour.
 //      - Added various Serial.print statements.
+//  v14 - Allowed volume increase past MP3 level 15.
+//      - Volume now scaled. Only allows setting of 1-10, but these are multiplied by 3 when setting the volume level, 10 * 3 = 30 which is the max.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
@@ -192,9 +194,9 @@ void setup() {
     EEPROM.commit();
   }
 
-  if (notification_volume < 1 || notification_volume > 15) {
-    Serial.println("Out of range value found for notification volume, resetting to level 5 as a precaution.");
-    notification_volume = 5;
+  if (notification_volume < 1 || notification_volume > 10) {
+    Serial.println("Out of range value found for notification volume, resetting to low level as a precaution.");
+    notification_volume = 2;
     EEPROM.write(EEPROM_NOTIFICATION_VOLUME, notification_volume);
     EEPROM.commit();
   }
@@ -415,7 +417,7 @@ void loop() {
 
       if (digitalRead(MINUTE_BUTTON)) {
         notification_volume = notification_volume + 1;
-        if (notification_volume > 15) {
+        if (notification_volume > 10) {
           notification_volume = 1;
         }
 
@@ -423,7 +425,7 @@ void loop() {
         EEPROM.write(EEPROM_NOTIFICATION_VOLUME, notification_volume);
         EEPROM.commit();
 
-        myDFPlayer.volume(notification_volume);
+        myDFPlayer.volume(notification_volume * 3);
         red1.showNumberDecEx(00, 0b00000000, true, 2, 0);
         red1.showNumberDecEx(notification_volume, 0b00000000, true, 2, 2);
         myDFPlayer.playMp3Folder(14);
