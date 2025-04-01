@@ -37,15 +37,15 @@
 //      - Added various Serial.print statements.
 //  v14 - Allowed volume increase past MP3 level 15.
 //      - Volume now scaled. Only allows setting of 1-10, but these are multiplied by 3 when setting the volume level, 10 * 3 = 30 which is the max.
+//  v15 - Ported latest time keeping code from BTTF logo & clock unit.
 //
 //       TODO: Make use of EEPROM to snooze status in case of accidental restart.
 //       TODO: Modify to only update the time from the NTP server if in the middle of the minute so as not to avoid the time jumping backwards.
+//       TODO: Port timekeeping code from BTTF clock project.
 
 #include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager
-#include <NTPClient.h>            // https://github.com/arduino-libraries/NTPClient
 #include <TM1637Display.h>        // https://github.com/avishorp/TM1637
 #include <ESP32_WS2812_Lib.h>     // https://github.com/Zhentao-Lin/ESP32_WS2812_Lib
-#include <TimeLib.h>              // https://playground.arduino.cc/Code/Time/
 #include <DFRobotDFPlayerMini.h>  // https://github.com/DFRobot/DFRobotDFPlayerMini
 #include <EEPROM.h>
 
@@ -58,7 +58,6 @@
 #define LEDS_COUNT 24
 #define EEPROM_SIZE 5
 #define CHANNEL 0
-#define UTC_OFFSET 1
 #define ALARM_ON_OFF_LED 26
 #define EEPROM_ALARM_MINUTES 0
 #define EEPROM_ALARM_HOURS 1
@@ -67,23 +66,24 @@
 #define EEPROM_CLOCK_BRIGHTNESS 4
 
 //========================USEFUL VARIABLES=============================
-int snoozeLengthMinutes = 5;  // Snooze time in minutes
-int utcOffsetInSeconds = 0;   // Non-DST Offset in seconds
-byte dateDisplayFormat = 2;   // Date display format, 1 = MMDD, 2 = DDMM
-bool clock24h = true;         // If false then 12H, if true then 24H.
-const char* ssid = "";        // YOUR SSID HERE - leave empty to use WiFi management portal
-const char* password = "";    // WIFI PASSWORD HERE
+const char* ntpServer = "pool.ntp.org";
+String timezone = "GMT0BST,M3.5.0/1,M10.5.0";  // https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
+int refreshTimeFromNTPIntervalSeconds = 1800;  // The minimum time between time syncs with the NTP server.
+int snoozeLengthMinutes = 5;                   // Snooze time in minutes
+const char* ssid = "";                         // YOUR SSID HERE - leave empty to use WiFi management portal
+const char* password = "";                     // WIFI PASSWORD HERE
 //=====================================================================
 
-byte refreshTimeFromNTPIntervalMinutes = 1;  // The minimum time inbetween time syncs from the NTP server.
+bool verboseDebug = false;
 byte clockBrightness;
+struct tm timeinfo;
 
-byte currentMinutes = 0, currentHours = 0, currentMonth = 0, currentDay = 0, previousMinutes = 0;
+byte currentSeconds = 0, currentMinutes = 0, currentHours = 0, previousMinutes = 0;
 int currentYear = 0;
-long epochTimeCurrent = 0;
-long epochTimeSnoozed = 0;
-long epochTimeNTP = 0;
-long epochTimeLocalLastRefreshFromNTP = 0;  //Tracks the local calculated time that the last NTP refresh was attempted.
+unsigned long epochTimeSnoozed = 0;
+unsigned long epochTimeIncremented = 0;
+unsigned long epochTime = 0;
+unsigned long epochTimeLocalLastRefreshFromNTP = 0;  //Tracks the local calculated time that the last NTP refresh was attempted.
 unsigned long lastColonToggleTime = 0;
 bool colonVisible = true;                         // Start with the colon visible
 const unsigned long COLON_FLASH_INTERVAL = 1000;  // Interval for flashing (1000ms)
@@ -93,7 +93,6 @@ ESP32_WS2812 pixels = ESP32_WS2812(LEDS_COUNT, LEDS_PIN, CHANNEL, TYPE_GRB);
 TM1637Display red1(DISPLAY_CLK, DISPLAY_DIO);
 
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds* UTC_OFFSET);
 
 int timerCount = 5;  // Set the timerCount artificially high so that the first display update happens immediately.
 bool skipTimerLogic = false;
@@ -109,8 +108,7 @@ void IRAM_ATTR onTimer() {
   // other time-sensitive action.
   if (currentYear > 0 && !skipTimerLogic) updateTimeDisplay();
 
-  // Increment the time by 1s.
-  epochTimeCurrent += 1;
+  epochTimeIncremented += 1;
 
   // Keep track of how many times we have got here.
   timerCount += 1;
@@ -138,13 +136,13 @@ void setup() {
   Serial.begin(9600);  // Start Serial for Debugging
   Serial.println("Initialising.");
 
+  // Pin initialization
   pinMode(SET_STOP_BUTTON, INPUT);
   pinMode(HOUR_BUTTON, INPUT);
   pinMode(MINUTE_BUTTON, INPUT);
   pinMode(ALARM_ON_OFF_LED, OUTPUT);
   pinMode(LEDS_PIN, OUTPUT);
 
-  // Pin initialization
   pixels.begin();
   pixels.setBrightness(0);
   pixels.show();
@@ -201,7 +199,7 @@ void setup() {
     EEPROM.commit();
   }
 
-  if (clockBrightness < 0 || clockBrightness > 3) {
+  if (clockBrightness > 3) {
     Serial.println("Out of range value found for clock brightness, resetting to level 2 as a precaution.");
     clockBrightness = 2;
     EEPROM.write(EEPROM_CLOCK_BRIGHTNESS, clockBrightness);
@@ -235,11 +233,27 @@ void setup() {
   }
 
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(100);
     Serial.print(".");
   }
-
+  Serial.println("");
   Serial.println("Successfully connected to WiFi.");
+
+  configTime(0, 0, ntpServer);
+
+  epochTime = getTime();
+
+  if (epochTime == 0) {
+    Serial.println("Could not retrieve time from NTP server, restarting...");
+    ESP.restart();  // Reset and try again
+  } else {
+    Serial.print("Epoch time from NTP server: ");
+    Serial.println(epochTime);
+    setTimezone(timezone);
+  }
+
+  epochTimeLocalLastRefreshFromNTP = epochTime;
+  epochTimeIncremented = epochTime;
 
   // Initialise the audio player.
   FPSerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
@@ -261,27 +275,13 @@ void setup() {
   myDFPlayer.volume(notification_volume);
   myDFPlayer.EQ(DFPLAYER_EQ_BASS);
   myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
- 
-  randomSeed(analogRead(0)); // Seed randomness
+
+  randomSeed(analogRead(0));  // Seed randomness
 
   // Initialize the MP3 play order array with numbers 1-9
   for (int i = 0; i < 9; i++) {
     mp3PlayOrder[i] = i + 1;
   }
-  
-  timeClient.begin();
-
-  Serial.println("Getting the time from the NTP server.");
-  epochTimeNTP = getEpochTimeFromNTPServer();
-  if (epochTimeNTP == 0) {
-    Serial.println("Could not retrieve time from NTP server, restarting...");
-    ESP.restart();  // Reset and try again
-  } else {
-    Serial.print("Epoch time from NTP server: ");
-    Serial.println(epochTimeNTP);
-  }
-  epochTimeLocalLastRefreshFromNTP = epochTimeNTP;
-  epochTimeCurrent = epochTimeNTP;
 
   // Define a timer. The timer will be used to toggle the time
   // colon on/off every 1s.
@@ -332,26 +332,47 @@ void loop() {
   audioFinished = 0;
   pixels.setBrightness(0);
 
-  // Maybe update the time from the NTP server.
-  // TODO: Check seconds so as not to set the time backwards if the local timekeeper has advanced too much.
-  if (epochTimeCurrent - epochTimeLocalLastRefreshFromNTP > refreshTimeFromNTPIntervalMinutes * 60) {
-    Serial.println("Getting the time from the NTP server.");
-    epochTimeNTP = 0;
-    epochTimeNTP = getEpochTimeFromNTPServer();
-    if (epochTimeNTP > 0) {
-      epochTimeCurrent = epochTimeNTP;
+  if (!snoozed) {
+    if (currentSeconds >= 30 && epochTimeIncremented - epochTimeLocalLastRefreshFromNTP >= refreshTimeFromNTPIntervalSeconds) {
+      Serial.println("Time to resync with NTP server.");
+      epochTimeLocalLastRefreshFromNTP = epochTimeIncremented;
+      reconnectWiFi();
     }
 
-    if (epochTimeNTP == 0) {
-      Serial.println("Could not retrieve time from NTP server, try again next time.");
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Getting local time from NTP server.");
+    } else if (verboseDebug) {
+      Serial.println("Getting local time from onboard RTC.");
+    }
+
+    epochTime = getTime();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Disconnecting from WiFi.");
+      WiFi.disconnect();
+      delay(1000);
+    }
+
+    if (verboseDebug) Serial.print("Local time from onboard RTC is: ");
+    if (verboseDebug) Serial.println(epochTime);
+
+    if (epochTime == 0) {
+      Serial.println("Could not get local time from onboard RTC, setting onboard RTC from incremented epoch time.");
+      setTime(epochTimeIncremented);
+      Serial.println("Getting local time from onboard RTC after setting from incremented epoch time.");
+      epochTime = getTime();
+      Serial.print("Local time from onboard RTC after setting from incremented epoch time is: ");
+      Serial.println(epochTime);
+    }
+
+    if (epochTime == 0) {
+      Serial.println("Could not retrieve local time, reconnecting to WiFi to sync from NTP server");
+      reconnectWiFi();
     } else {
-      Serial.print("Epoch time from NTP server: ");
-      Serial.println(epochTimeNTP);
+      if (verboseDebug) Serial.print("Epoch time from onboard RTC: ");
+      if (verboseDebug) Serial.println(epochTime);
+      epochTimeIncremented = epochTime;
     }
-
-    // Store the current time so that we don't get stuck in a loop
-    // if the NTP server was unavailable.
-    epochTimeLocalLastRefreshFromNTP = epochTimeCurrent;
   }
 
   // Check to see if the time displays need to be updated.
@@ -464,10 +485,32 @@ void loop() {
   }
 
   // Check whether we are snoozed and the snooze duration has been passed
-  if (snoozed && epochTimeCurrent - epochTimeSnoozed >= snoozeLengthMinutes * 60 && alarm_on_off == 1) {
+  if (snoozed && epochTimeIncremented - epochTimeSnoozed >= snoozeLengthMinutes * 60 && alarm_on_off == 1) {
     Serial.println("Snooze duration expired, triggering alarm.");
     alarm();
     Serial.println("Exit alarm");
+  }
+}
+
+void reconnectWiFi() {
+  int wifiConnectLoopCounter = 0;
+
+  if (WiFi.status() == WL_CONNECTED) { WiFi.disconnect(); }
+  Serial.print("Reconnecting to WiFi.");
+  WiFi.reconnect();
+  while (WiFi.status() != WL_CONNECTED && wifiConnectLoopCounter <= 50) {
+    delay(100);
+    Serial.print(".");
+    wifiConnectLoopCounter += 1;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("");
+    Serial.println("Successfully reconnected to WiFi.");
+  } else {
+    Serial.println("");
+    Serial.println("Timeout when connecting to WiFi.");
+    WiFi.disconnect();
   }
 }
 
@@ -476,17 +519,16 @@ void maybeUpdateClock() {
 
     //Serial.println("Entered time display update...");
     previousMinutes = currentMinutes;
-    setTime(epochTimeCurrent);
-    currentYear = year();
-    currentMonth = month();
-    currentDay = day();
-    currentHours = hour();
-    currentMinutes = minute();
+    epochTime = getTime();
+    currentYear = timeinfo.tm_year + 1900;
+    currentHours = timeinfo.tm_hour;
+    currentMinutes = timeinfo.tm_min;
+    currentSeconds = timeinfo.tm_sec;
+
     if (currentYear >= 2025 && previousMinutes != currentMinutes) {
       Serial.println("Updating time display.");
       updateTimeDisplay();
       red1.setBrightness(clockBrightness);
-      checkDSTAndSetOffset();
       timerCount = 0;
     }
   }
@@ -500,16 +542,6 @@ void updateTimeDisplay() {
   } else {
     red1.showNumberDecEx(currentHours, 0b00000000, true, 2, 0);    // Display hours without colon
     red1.showNumberDecEx(currentMinutes, 0b00000000, true, 2, 2);  // Display minutes without colon
-  }
-}
-
-void checkDSTAndSetOffset() {
-  if (isDST(currentMonth, currentDay, currentYear)) {
-    adjustTime(utcOffsetInSeconds + (UTC_OFFSET * 3600));  // Apply DST
-    Serial.println("DST active, UTC+1");
-  } else {
-    adjustTime(utcOffsetInSeconds);  // Standard time
-    Serial.println("DST inactive, UTC");
   }
 }
 
@@ -546,14 +578,15 @@ void alarm() {
       if (digitalRead(SET_STOP_BUTTON)) {
         u = 89;
         Serial.println("Alarm cancelled.");
-        cancelAlarm = true;}
+        cancelAlarm = true;
+      }
 
       // Check for snooze. If requested then record the snooze request time (so that we can trigger the alarm
       // again at the end of the snooze period), and then exit the loop.
       if (digitalRead(MINUTE_BUTTON) || digitalRead(HOUR_BUTTON)) {
         Serial.println("Snoozing.");
         snoozed = true;
-        epochTimeSnoozed = epochTimeCurrent;
+        epochTimeSnoozed = epochTimeIncremented;
         break;
       }
     }
@@ -585,7 +618,7 @@ void alarm() {
           audioFinished = 0;
           myDFPlayer.stop();
           // Increment the play order index to select the next song
-          mp3PlayOrderIndex +=1;
+          mp3PlayOrderIndex += 1;
           // If we have exceeded the array bound then reset and reshuffle the array.
           if (mp3PlayOrderIndex > 8) {
             mp3PlayOrderIndex = 0;
@@ -616,7 +649,7 @@ void alarm() {
       {
         Serial.println("Snoozing.");
         snoozed = true;
-        epochTimeSnoozed = epochTimeCurrent;
+        epochTimeSnoozed = epochTimeIncremented;
       }
 
       cancelAlarm = digitalRead(SET_STOP_BUTTON);
@@ -629,7 +662,7 @@ void alarm() {
 
   pixels.setBrightness(0);
   pixels.show();
-  
+
   // Prevent the alarm time from being displayed when the set/stop button is pressed
   // to cancel the alarm. The delay just prevents the main loop from being returned-to immediately
   // and the set/stop button handler from being entered.
@@ -731,70 +764,6 @@ void printDetail(uint8_t type, int value) {
   }
 }
 
-bool isDST(int month, int day, int year) {
-  int lastSundayInMarch = getLastSundayOfMonth(3, year);
-  int lastSundayInOctober = getLastSundayOfMonth(10, year);
-  int dayOfYear = getDayOfYear(month, day, year);
-  return (dayOfYear >= lastSundayInMarch && dayOfYear < lastSundayInOctober);
-}
-
-int getDayOfYear(int month, int day, int year) {
-  int daysInMonth[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-  if (isLeapYear(year)) {
-    daysInMonth[1] = 29;  // Leap year adjustment
-  }
-
-  int dayOfYear = 0;
-  for (int i = 0; i < month - 1; i++) {
-    dayOfYear += daysInMonth[i];
-  }
-  return dayOfYear + day;
-}
-
-bool isLeapYear(int year) {
-  return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-}
-
-int getLastSundayOfMonth(int month, int year) {
-  // Array with number of days per month
-  int daysInMonth[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-  if (isLeapYear(year)) {
-    daysInMonth[1] = 29;  // February has 29 days in a leap year
-  }
-  int lastDay = daysInMonth[month - 1];  // Last day of the month
-
-  // Time structure to hold information about the last day of the month
-  tm timeinfo;
-  timeinfo.tm_year = year - 1900;  // Year since 1900
-  timeinfo.tm_mon = month - 1;     // Month (0-11)
-  timeinfo.tm_mday = lastDay;
-  timeinfo.tm_hour = 12;  // Set to noon to avoid DST issues
-  timeinfo.tm_min = 0;
-  timeinfo.tm_sec = 0;
-  mktime(&timeinfo);  // Normalize tm struct
-
-  // Get the weekday (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
-  int weekday = timeinfo.tm_wday;
-
-  // Calculate the last Sunday of the month
-  int lastSunday = lastDay - weekday;
-  return getDayOfYear(month, lastSunday, year);  // Convert to day of the year
-}
-
-long getEpochTimeFromNTPServer() {
-  long epochTime = 0;
-  // Get the current time, retry if unsuccessful
-  for (int i = 0; i <= 20; i++) {
-    timeClient.update();
-    epochTime = timeClient.getEpochTime();
-    if (epochTime > 0) {
-      break;
-    }
-    delay(50);
-  }
-  return epochTime;
-}
-
 // Function to shuffle the array using Fisher-Yates algorithm
 void shuffleMP3OrderArray() {
   for (int i = 8; i > 0; i--) {
@@ -803,4 +772,29 @@ void shuffleMP3OrderArray() {
     mp3PlayOrder[i] = mp3PlayOrder[j];
     mp3PlayOrder[j] = temp;
   }
+}
+
+// Function that gets current epoch time
+unsigned long getTime() {
+  time_t now;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return (0);
+  }
+  time(&now);
+  return now;
+}
+
+void setTime(int epoch) {
+  struct timeval now = { .tv_sec = epoch };
+
+  Serial.print("Setting onboard RTC to: ");
+  Serial.println(epoch);
+  settimeofday(&now, NULL);
+}
+
+void setTimezone(String timezone) {
+  Serial.printf("Setting Timezone to %s\n", timezone.c_str());
+  setenv("TZ", timezone.c_str(), 1);  //  Now adjust the TZ.  Clock settings are adjusted to show the new local time.
+  tzset();
 }
